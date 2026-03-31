@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyRender + SMPL Interactive Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 1200px;
+            width: 100%;
+        }
+        .controls {
+            flex: 1;
+            min-width: 300px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+        .viewer {
+            flex: 1;
+            min-width: 400px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #333;
+            border-radius: 4px;
+            min-height: 400px;
+            position: relative;
+        }
+        .viewer img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+        }
+        .control-group {
+            margin-bottom: 20px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .control-group h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #555;
+        }
+        .slider-container {
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+        }
+        .slider-container label {
+            width: 120px;
+            font-size: 14px;
+        }
+        .slider-container input {
+            flex: 1;
+        }
+        .slider-container span {
+            width: 40px;
+            text-align: right;
+            font-size: 12px;
+            color: #777;
+        }
+        .loading {
+            color: white;
+            font-size: 18px;
+            position: absolute;
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 4px;
+        }
+        .error {
+            color: #ff6b6b;
+            font-size: 16px;
+            position: absolute;
+            background: rgba(0,0,0,0.8);
+            padding: 10px 20px;
+            border-radius: 4px;
+            display: none;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>TinyRender + SMPL Interactive</h1>
+    
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <h3>Body Shape (Betas)</h3>
+                <div id="beta-controls"></div>
+            </div>
+        </div>
+
+        <div class="viewer">
+            <img id="render-output" src="" alt="Rendered Output" style="display: none;">
+            <div id="loading-text" class="loading">Loading...</div>
+            <div id="error-text" class="error"></div>
+        </div>
+    </div>
+
+    <script>
+        const betaControls = document.getElementById('beta-controls');
+        const renderOutput = document.getElementById('render-output');
+        const loadingText = document.getElementById('loading-text');
+        const errorText = document.getElementById('error-text');
+
+        // State
+        const state = {
+            betas: Array(10).fill(0)
+        };
+
+        // Helper to create slider
+        function createSlider(container, label, min, max, step, value, onChange) {
+            const div = document.createElement('div');
+            div.className = 'slider-container';
+            
+            const labelEl = document.createElement('label');
+            labelEl.textContent = label;
+            
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = min;
+            input.max = max;
+            input.step = step;
+            input.value = value;
+            
+            const valSpan = document.createElement('span');
+            valSpan.textContent = value;
+
+            input.oninput = (e) => {
+                const val = parseFloat(e.target.value);
+                valSpan.textContent = val;
+                onChange(val);
+            };
+
+            div.appendChild(labelEl);
+            div.appendChild(input);
+            div.appendChild(valSpan);
+            container.appendChild(div);
+        }
+
+        // Init Beta Sliders (0-9)
+        for (let i = 0; i < 10; i++) {
+            createSlider(betaControls, `Beta ${i}`, -3, 3, 0.1, 0, (val) => {
+                state.betas[i] = val;
+                requestRender();
+            });
+        }
+
+        // Debounce render requests
+        let pendingRequest = false;
+        let needsUpdate = false;
+
+        async function requestRender() {
+            if (pendingRequest) {
+                needsUpdate = true;
+                return;
+            }
+
+            pendingRequest = true;
+            loadingText.style.display = 'block';
+            errorText.style.display = 'none';
+            
+            try {
+                console.log("Requesting render...", state);
+                const response = await fetch('/render', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(state)
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Revoke old URL to free memory
+                    if (renderOutput.src && renderOutput.src.startsWith('blob:')) {
+                        URL.revokeObjectURL(renderOutput.src);
+                    }
+                    
+                    renderOutput.src = url;
+                    renderOutput.style.display = 'block';
+                    loadingText.style.display = 'none';
+                    console.log("Render success");
+                } else {
+                    const errData = await response.json();
+                    console.error("Render failed:", errData);
+                    showError(`Render failed: ${errData.error || response.statusText}`);
+                }
+            } catch (e) {
+                console.error("Network error:", e);
+                showError(`Network error: ${e.message}`);
+            } finally {
+                pendingRequest = false;
+                if (needsUpdate) {
+                    needsUpdate = false;
+                    requestRender();
+                } else {
+                    // If finished and success, ensure loading is hidden
+                    if (renderOutput.style.display === 'block') {
+                        loadingText.style.display = 'none';
+                    }
+                }
+            }
+        }
+
+        function showError(msg) {
+            loadingText.style.display = 'none';
+            errorText.textContent = msg;
+            errorText.style.display = 'block';
+        }
+
+        // Initial render
+        requestRender();
+
+    </script>
+</body>
+</html>
